@@ -1,47 +1,79 @@
 #!/bin/bash
 
-# Cập nhật hệ thống
-sudo dnf update -y
+# --- Cấu hình ---
+DOMAIN="yourdomain.com"
+DB_NAME="wordpress"
+DB_USER="wpuser"
+DB_PASS="wppassword"
+PHP_VERSION="8.1"
 
-# Cài đặt Apache, MariaDB, PHP và các extensions cần thiết
-sudo dnf install httpd mariadb-server mariadb php php-mysqlnd php-fpm php-xml php-mbstring php-zip php-curl php-gd wget unzip -y
+# chạy quyền root 
+sudo -i
 
-# Khởi động MariaDB
-sudo systemctl start mariadb
-sudo systemctl enable mariadb
 
-# Cấu hình cơ sở dữ liệu
-sudo mysql -u root -e "CREATE DATABASE wordpress_db;"
-sudo mysql -u root -e "CREATE USER 'wordpress_user'@'localhost' IDENTIFIED BY '@Nokia123123';"
-sudo mysql -u root -e "GRANT ALL PRIVILEGES ON wordpress_db.* TO 'wordpress_user'@'localhost';"
-sudo mysql -u root -e "FLUSH PRIVILEGES;"
+# --- Cập nhật và cài repo ---
+dnf update -y
+dnf install epel-release -y
+dnf install https://rpms.remirepo.net/enterprise/remi-release-9.rpm -y
+dnf module reset php -y
+dnf module enable php:remi-${PHP_VERSION} -y
 
-# Tải và cài đặt WordPress
-cd /var/www/html
-wget https://wordpress.org/latest.tar.gz
-tar -xvzf latest.tar.gz
-cp -r wordpress/* /var/www/html/
+# --- Cài đặt gói cần thiết ---
+dnf install nginx mariadb-server php php-fpm php-mysqlnd php-opcache php-gd php-xml php-mbstring php-curl php-intl php-zip unzip wget firewalld -y
 
-# Cấu hình wp-config.php
-cp /var/www/html/wp-config-sample.php /var/www/html/wp-config.php
-sed -i "s/database_name_here/wordpress_db/" /var/www/html/wp-config.php
-sed -i "s/username_here/wordpress_user/" /var/www/html/wp-config.php
-sed -i "s/password_here/your_password/" /var/www/html/wp-config.php
+# --- Khởi động dịch vụ ---
+systemctl enable --now nginx mariadb php-fpm firewalld
 
-# Đảm bảo quyền truy cập thư mục
-sudo chown -R apache:apache /var/www/html/*
+# --- Cấu hình firewall ---
+firewall-cmd --permanent --add-service=http
+firewall-cmd --reload
 
-# Cấu hình Apache
-sudo sed -i 's/AllowOverride None/AllowOverride All/' /etc/httpd/conf/httpd.conf
+# --- Tạo database ---
+mysql -e "CREATE DATABASE ${DB_NAME};"
+mysql -e "CREATE USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
+mysql -e "GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';"
+mysql -e "FLUSH PRIVILEGES;"
 
-# Mở port HTTP và HTTPS
-sudo firewall-cmd --zone=public --add-service=http --permanent
-sudo firewall-cmd --zone=public --add-service=https --permanent
-sudo firewall-cmd --reload
+# --- Tải WordPress ---
+cd /tmp
+wget https://wordpress.org/latest.zip
+unzip latest.zip
+cp -r wordpress/* /usr/share/nginx/html/
+chown -R nginx:nginx /usr/share/nginx/html
+chmod -R 755 /usr/share/nginx/html
 
-# Khởi động Apache
-sudo systemctl start httpd
-sudo systemctl enable httpd
+# --- Cấu hình wp-config.php ---
+cp /usr/share/nginx/html/wp-config-sample.php /usr/share/nginx/html/wp-config.php
+sed -i "s/database_name_here/${DB_NAME}/" /usr/share/nginx/html/wp-config.php
+sed -i "s/username_here/${DB_USER}/" /usr/share/nginx/html/wp-config.php
+sed -i "s/password_here/${DB_PASS}/" /usr/share/nginx/html/wp-config.php
 
-# Hoàn thành cài đặt
-echo "Cài đặt WordPress hoàn tất. Vui lòng truy cập http://your-server-ip để tiếp tục."
+# --- Cấu hình Nginx đơn giản ---
+cat > /etc/nginx/conf.d/wordpress.conf <<EOF
+server {
+    listen 80;
+    server_name ${DOMAIN};
+
+    root /usr/share/nginx/html;
+    index index.php index.html;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$args;
+    }
+
+    location ~ \.php$ {
+        include fastcgi_params;
+        fastcgi_pass unix:/run/php-fpm/www.sock;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+}
+EOF
+
+# --- Khởi động lại Nginx ---
+nginx -t && systemctl reload nginx
+
+echo "✅ Cài đặt WordPress hoàn tất. Truy cập server IP để cài đặt qua trình duyệt."
